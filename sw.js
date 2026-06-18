@@ -2,15 +2,25 @@ const CACHE_NAME = 'dompet-saya-cache-v1';
 const ASSETS_TO_CACHE = [
   './index.html',
   './manifest.json',
-  './assets/favicon-32.png',
-  './assets/icon-192.png',
-  './assets/icon-512.png',
 ];
 
 self.addEventListener('install', event => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS_TO_CACHE))
-  );
+  // Use a tolerant install step: try to fetch each asset and cache it if available.
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE_NAME);
+    await Promise.allSettled(ASSETS_TO_CACHE.map(async (url) => {
+      try {
+        const res = await fetch(url, { cache: 'no-cache' });
+        if (res && res.ok) {
+          await cache.put(url, res.clone());
+        } else {
+          console.warn('SW: asset not cached (fetch failed):', url, res && res.status);
+        }
+      } catch (err) {
+        console.warn('SW: error fetching asset', url, err);
+      }
+    }));
+  })());
 });
 
 self.addEventListener('activate', event => {
@@ -22,6 +32,7 @@ self.addEventListener('activate', event => {
 });
 
 self.addEventListener('fetch', event => {
+  // Try cache first, fallback to network
   event.respondWith(
     caches.match(event.request).then(response => response || fetch(event.request))
   );
