@@ -1,6 +1,6 @@
 const CACHE_NAME = 'dompet-saya-cache-v1';
 const ASSETS_TO_CACHE = [
-  './Catatan Keuangan.html',
+  './index.html',
   './manifest.json',
   './assets/favicon-32.png',
   './assets/icon-192.png',
