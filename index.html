@@ -16,6 +16,7 @@
 <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore-compat.js"></script>
+<script src="exceljs.min.js"></script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:#f8f9fb;min-height:100vh}
@@ -220,9 +221,13 @@ function Dashboard({transactions,allocations,onAddIncome,onAddExpense}){
   return <div style={{paddingBottom:90}}>
     <div style={{background:"linear-gradient(135deg,#16a34a,#15803d)",borderRadius:20,padding:"24px 20px",marginBottom:20,color:"#fff"}}>
       <div style={{fontSize:13,opacity:0.85,marginBottom:6}}>Saldo Saat Ini</div>
-      <div style={{fontSize:32,fontWeight:800,letterSpacing:-1}}>{formatRp(balance)}</div>
+      <div style={{fontSize:32,fontWeight:800,letterSpacing:-1}}>
+        {balance < 0 ? "-" : ""}
+        {formatRp(Math.abs(balance))}</div>
       <div style={{marginTop:16,paddingTop:16,borderTop:"1px solid rgba(255,255,255,0.2)",display:"flex",justifyContent:"space-between"}}>
-        <div><div style={{fontSize:11,opacity:0.8}}>Dana Bebas</div><div style={{fontSize:16,fontWeight:700}}>{formatRp(Math.max(freeFund,0))}</div></div>
+        <div><div style={{fontSize:11,opacity:0.8}}>Dana Bebas</div><div style={{fontSize:16,fontWeight:700}}>
+          {freeFund < 0 ? "-" : ""}
+          {formatRp(Math.abs(freeFund))}</div></div>
         <div style={{textAlign:"right"}}><div style={{fontSize:11,opacity:0.8}}>Dialokasikan</div><div style={{fontSize:16,fontWeight:700}}>{formatRp(totalAllocated)}</div></div>
       </div>
     </div>
@@ -445,7 +450,9 @@ function Allocation({transactions,allocations,onSave,onDelete}){
   </div>;
 }
 
-function Ekspor({ transactions, budgets, allocations }){
+function Ekspor({ transactions, budgets, allocations, onImport}){
+  const [mode, setMode] = useState(null);
+  const fileRef = useRef(null);
   const exportJson = () => {
     const data = { transactions, budgets, allocations };
     downloadBlob(JSON.stringify(data, null, 2), `catatan-keuangan-${new Date().toISOString().slice(0,10)}.json`, 'application/json');
@@ -490,20 +497,181 @@ function Ekspor({ transactions, budgets, allocations }){
     downloadBlob(CSV_BOM + sections, `catatan-keuangan-${new Date().toISOString().slice(0,10)}.csv`, 'text/csv;charset=utf-8');
   };
 
+  const exportXlsx = async () => {
+    const totalIncome=transactions.filter(t=>t.type==="income").reduce((s,t)=>s+t.nominal,0);
+  const totalExpense=transactions.filter(t=>t.type==="expense").reduce((s,t)=>s+t.nominal,0);
+  const balance=totalIncome-totalExpense;
+   const totalAllocated=allocations.reduce((s,a)=>s+a.amount,0);
+  const freeFund=balance-totalAllocated;
+    const wb = new ExcelJS.Workbook();
+    const wsTransaksi = wb.addWorksheet('Transaksi');
+
+    wsTransaksi.columns = [
+      { header: 'Tanggal', key: 'tanggal', width: 15 },
+      { header: 'Tipe', key: 'tipe', width: 15 },
+      { header: 'Kategori', key: 'kategori', width: 20 },
+      { header: 'Nominal', key: 'nominal', width: 15 },
+      { header: 'Catatan', key: 'catatan', width: 30 },
+    ];
+
+    transactions.forEach(t => {
+      wsTransaksi.addRow({
+        tanggal: new Date(t.tanggal),
+        nominal: t.nominal,
+        kategori: t.kategori,
+        tipe: t.type === 'income' ? 'Pemasukan' : 'Pengeluaran',
+        catatan: t.catatan,
+      });
+    });
+    wsTransaksi.addRow({});
+    const barisAkhir = transactions.length + 1;
+    const barisSaldo = wsTransaksi.addRow({
+        kategori: 'Saldo Terkini',
+        nominal: {
+          formula: `SUMIF(B2:B${barisAkhir}, "Pemasukan", D2:D${barisAkhir}) - SUMIF(B2:B${barisAkhir}, "Pengeluaran", D2:D${barisAkhir})`,
+          result: balance,
+        },
+      });
+      barisSaldo.getCell( 'kategori').font = { bold: true};
+      barisSaldo.getCell('nominal').font = { bold: true, color: { argb: 'FF16A34A' } };
+      wsTransaksi.addConditionalFormatting({
+        ref: barisSaldo.getCell('nominal').address,
+        rules: [
+          {
+            type: 'cellIs',
+            operator: 'lessThan',
+            formulae: ['0'],
+            style: { font: { color: { argb: 'FFEF4444' } } },
+          }
+        ]
+      });
+      wsTransaksi.addConditionalFormatting({
+        ref: `D2:D${barisAkhir}`,
+        rules: [
+          {
+            type: 'expression',
+            formulae: ['$B2="Pemasukan"'],
+            style: { font: { color: { argb: 'FF16A34A' } } }, 
+          },
+          {
+            type: 'expression',
+            formulae: ['$B2="Pengeluaran"'],
+            style: { font: { color: { argb: 'FFEF4444' } } }, 
+          }
+        ] 
+      });
+      //barisSaldo.getCell('nominal').numFmt = '"Rp"#,##0;[Red]-"Rp"#,##0';
+
+    wsTransaksi.getColumn('nominal').numFmt = '"Rp"#,##0';
+    wsTransaksi.columns.forEach(column => {
+      column.alignment = { vertical: 'middle', horizontal: 'center' };
+    });
+    wsTransaksi.views = [{ state: 'frozen', ySplit: 1 }];
+    wsTransaksi.getRow(1).eachCell(cell => {
+      cell.font= { bold: true, color: { argb: 'FFFFFFFF' } }; 
+      cell.fill= { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF16A34A' } };
+      cell.alignment= { vertical: 'middle', horizontal: 'center' };
+  });
+  // wsTransaksi.getColumn('Saldo Terkini').font = { bold: true, color: { argb: 'FF16A34A' } };
+
+    const tanggal = new Date().toISOString().slice(0, 10);
+    const buffer = await wb.xlsx.writeBuffer();
+    downloadBlob(buffer, `catatan-keuangan-${tanggal}.xlsx`,
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  };
+
   const exportBoth = () => {
     exportJson();
     exportCsv();
+    exportXlsx();
   };
+
+   const handleFile = async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(await file.arrayBuffer());
+    const ws = wb.getWorksheet('Transaksi');
+    if (!ws) { alert('Sheet "Transaksi" tidak ditemukan. Pakai file hasil ekspor aplikasi ini.'); return; }
+
+    // ── TAHAP 1: baca semua baris ──
+    const baru = [];
+    ws.eachRow((row, nomorBaris) => {
+      if (nomorBaris === 1) return;
+      const tanggalMentah = row.getCell(1).value;
+      const tanggal = tanggalMentah instanceof Date ?
+        tanggalMentah.toISOString().slice(0, 10) : null;
+      const tipeTeks = row.getCell(2).value;
+      if (tipeTeks !== 'Pemasukan' && tipeTeks !== 'Pengeluaran') return;
+      const type = tipeTeks === 'Pemasukan' ? 'income' : 'expense';
+      const kategori = row.getCell(3).text;
+      const nominal = row.getCell(4).value;
+      const catatan = row.getCell(5).text;
+      if (!tanggal || typeof nominal !== 'number' || nominal <= 0) return;
+      baru.push({ id: uid(), type, tanggal, kategori, nominal, catatan });
+    });                                   // ← eachRow BERAKHIR di sini
+
+    // ── TAHAP 2: cek duplikat (sekali saja) ──
+    const kunci = t => [t.tanggal, t.type, t.kategori, t.nominal, t.catatan].join('|');
+    const sudahAda = new Set(transactions.map(kunci));
+    const untukDitambah = baru.filter(t => !sudahAda.has(kunci(t)));
+    const jumlahSudahAda = baru.length - untukDitambah.length;
+
+    // ── TAHAP 3: konfirmasi & simpan (sekali saja) ──
+    if (untukDitambah.length === 0) {
+      alert(`Tidak ada data baru. ${jumlahSudahAda} transaksi sudah ada di aplikasi.`);
+      return;
+    }
+
+    const ok = window.confirm(
+      `${untukDitambah.length} transaksi akan ditambahkan.\n` +
+      `${jumlahSudahAda} sudah ada (dilewati).\n\nLanjutkan?`
+    );
+    if (!ok) return;
+
+    onImport(untukDitambah);
+    alert('Impor selesai!');
+    setMode(null);
+  } catch (err) {
+    alert('Gagal membaca file: ' + err.message);
+  }
+};
 
   return (
     <div style={{paddingBottom:90}}>
+      
       <div style={{background:'#fff',borderRadius:16,padding:20,border:'1.5px solid #f0f0f0'}}>
-        <div style={{marginBottom:16,fontSize:14,color:'#374151'}}>Ekspor semua data transaksi, anggaran, dan alokasi sekaligus ke JSON + CSV untuk backup dan Excel.</div>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10}}>
-          <Btn style={{width:'100%'}} onClick={exportBoth}>Ekspor JSON + CSV</Btn>
+        <div style={{marginBottom:16,fontSize:14,color:'#374151'}}>
+          {mode === 'ekspor' ? 'Pilih Format Ekspor Data. Paket lengkap akan mengekspor semua data dalam semua format sekaligus.' 
+          : mode === 'impor' ? 'Silahkan Pilih data yang ingin diimpor. Pastikan format data sudah sesuai.'
+          : 'Kelola data keuangan kamu dengan mengekspor atau mengimpor data. Ekspor data akan membuat cadangan data kamu, sedangkan impor data akan menambahkan catatan dari file yang dipilih.'
+          }
+          </div>
+        
+        {mode === null && (
+        <div style={{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:10}}>
+          <Btn onClick={() => setMode('ekspor')}>Ekspor Data</Btn>
+          <Btn onClick={() => setMode('impor')}>Impor Data</Btn>
+          </div>
+      )}
+      {mode === 'ekspor' && (
+        <div style={{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:10,}}>
+          <Btn style={{width:'100%'}} onClick={exportBoth}>Ekspor Paket Lengkap</Btn>
           <Btn style={{width:'100%'}} onClick={exportJson}>Ekspor JSON</Btn>
           <Btn variant='ghost' style={{width:'100%'}} onClick={exportCsv}>Ekspor CSV</Btn>
+          <Btn variant='ghost' style={{width:'100%'}} onClick={exportXlsx}>Ekspor Excel</Btn>
+          <Btn variant='ghost' style={{gridColumn: '1 / -1'}} onClick={() => setMode(null)}>← Kembali</Btn>
         </div>
+      )}
+      {mode === 'impor' && (
+        <div style={{display:'grid',gridTemplateColumns:'repeat(1,1fr)',gap:10}}>
+          <input ref={fileRef} type="file" accept=".xlsx" onChange={handleFile} style={{display:'none'}} />
+          <Btn onClick={() => fileRef.current.click()}>Pilih File</Btn>
+          <Btn variant='ghost' style={{gridColumn: '1 / -1'}} onClick={() => setMode(null)}>← Kembali</Btn>
+        </div>
+      )}
       </div>
     </div>
   );
@@ -681,6 +849,7 @@ function App(){
     );
   }
 
+  const importTransactions = list => setTransactions(ts => [...list, ...ts]);
   const addTransaction=data=>{
     const t={id:uid(),type:modal.type,...data};
     if(modal.editItem) setTransactions(ts=>ts.map(x=>x.id===modal.editItem.id?{...x,...data,type:modal.type}:x));
@@ -713,7 +882,7 @@ function App(){
         {activeTab==="Transaksi"&&<Transactions transactions={transactions} onDelete={deleteTransaction} onEdit={t=>setModal({type:t.type,editItem:t})}/>}
         {activeTab==="RAB"&&<RAB transactions={transactions} budgets={budgets} onSaveBudget={(cat,val)=>setBudgets(b=>({...b,[cat]:val}))}/>}
         {activeTab==="Alokasi"&&<Allocation transactions={transactions} allocations={allocations} onSave={saveAllocation} onDelete={deleteAllocation}/>}
-        {activeTab==="Ekspor"&&<Ekspor transactions={transactions} budgets={budgets} allocations={allocations}/>}
+        {activeTab==="Ekspor"&&<Ekspor transactions={transactions} budgets={budgets} allocations={allocations} onImport={importTransactions}/>}
       </div>
 
       <div style={{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:480,background:"#fff",borderTop:"1px solid #f0f0f0",display:"flex",zIndex:50}}>
